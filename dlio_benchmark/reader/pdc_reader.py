@@ -14,12 +14,6 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 """
-# PDC-backed reader, via ctypes. Selected with dataset.format: pdc.
-#
-# Requires pdc_ctypes.py on PYTHONPATH.
-# Objects are samples-first (num_samples, dim1, dim2), written by the
-# matching generator.
-
 import numpy as np
 import time
 
@@ -34,41 +28,37 @@ dlp = Profile(MODULE_DATA_READER)
 # Must match the generator
 RECORD_DTYPE = np.uint8
 
-# filename -> (num_samples, dim1, dim2); shared across all readers in a
+# filename -> (num_samples, dim1, dim2): shared across all readers in a
 # worker process, so the shape lookup happens once per file per worker.
 _shape_cache = {}
 
 import os
 
+# PDC-backed reader, via ctypes. Selected with dataset.format: pdc.
+# Requires pdc_ctypes.py on PYTHONPATH.
+# Objects are samples first (num_samples, dim1, dim2)
+
 def object_name(path):
     return os.path.basename(path)
 
-
+"""
+Reader for PDC objects. One region transfer per sample.
+"""
 class PDCReader(FormatReader):
-    """Reader for PDC objects. One region transfer per sample."""
-
     @dlp.log_init
     def __init__(self, dataset_type, thread_index, epoch):
         super().__init__(dataset_type, thread_index)
         self.dtype = RECORD_DTYPE
-        # Touch the client here rather than on first read, so PDCinit cost
-        # doesn't land inside the first get_sample timing. __init__ runs
-        # inside the DataLoader worker (ReaderFactory.get_reader is called
-        # from worker_init), so this stays fork-safe.
         get_client("dlio")
 
-    # ------------------------------------------------------------------
+    """
+    Per-file (dim1, dim2).
 
+    Preferred: a small companion object '<name>-dims' written by the
+    generator. Falls back to deriving a square sample from
+    record_length, which is only correct when record_length_stdev == 0.
+    """
     def _shape(self, filename):
-        """Per-file (dim1, dim2).
-
-        Preferred: a small companion object '<name>-dims' written by the
-        generator. Falls back to deriving a square sample from
-        record_length, which is only correct when record_length_stdev == 0.
-
-        This is the analogue of HDF5 reading a dataset's shape from the file
-        header on open -- one small metadata lookup, cached per file.
-        """
         if filename in _shape_cache:
             return _shape_cache[filename]
 
@@ -85,8 +75,6 @@ class PDCReader(FormatReader):
 
         _shape_cache[filename] = shape
         return shape
-
-    # ------------------------------------------------------------------
 
     @dlp.log
     def open(self, filename):

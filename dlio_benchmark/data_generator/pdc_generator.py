@@ -1,14 +1,18 @@
 """
-PDC data generator for DLIO, via ctypes (no PDCpy). Selected with
-dataset.format: pdc.
+   Copyright (c) 2025, UChicago Argonne, LLC
+   All Rights Reserved
 
-  * samples-first layout (num_samples, dim1, dim2), matching DLIO's HDF5
-    generator, so a per-sample region read is contiguous.
-  * containers created PERSIST, not TRANSIENT, so the staged dataset
-    outlives the generating job.
-  * client created lazily per-process.
-  * an empty placeholder file is written at out_path_spec so DLIO's
-    file-list machinery (glob on *.pdc) still works. Don't drop it.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
 """
 
 import logging
@@ -28,11 +32,16 @@ RECORD_DTYPE = np.uint8
 
 import os
 
+"""
+PDC data generator for DLIO, via ctypes (no PDCpy). 
+Selected with dataset.format: pdc
+"""
+
 def object_name(path):
     return os.path.basename(path)
 
 class PDCGenerator(DataGenerator):
-    """Generates one PDC object per DLIO 'file'."""
+    # Generates one PDC object per DLIO file
 
     def __init__(self):
         super().__init__()
@@ -83,7 +92,7 @@ class PDCGenerator(DataGenerator):
             # client.create_object(cont_id, f"{out_path_spec}-labels", record_labels)
             logging.info(f"PDC object created {name}")
 
-            # Placeholder file so DLIO's file-list machinery still works.
+            # Placeholder file so DLIO's file list still works
             with open(out_path_spec, "w"):
                 pass
 
