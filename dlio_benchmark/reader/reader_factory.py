@@ -115,6 +115,12 @@ class ReaderFactory(object):
             else:
                 from dlio_benchmark.reader.synthetic_reader import SyntheticReader
                 return SyntheticReader(dataset_type, thread_index, epoch_number)
+        elif type == FormatType.PDC:
+            if _args.odirect == True:
+                raise Exception("O_DIRECT for %s format is not yet supported." %type)
+            else:
+                from dlio_benchmark.reader.pdc_reader import PDCReader
+                return PDCReader(dataset_type, thread_index, epoch_number)
 
         else:
             raise Exception("Loading data of %s format is not supported without framework data loader" %type)

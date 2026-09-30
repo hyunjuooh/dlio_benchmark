@@ -14,7 +14,6 @@ core_deps = [
     "Pillow>=9.3.0",
     "PyYAML>=6.0.0",
     "h5py>=3.11.0",
-    "mpi4py>=3.1.4",
     "numpy>=1.23.5",
     "omegaconf>=2.2.0",
     "pandas>=1.5.1",
