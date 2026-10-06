@@ -22,7 +22,7 @@ dataset:
 reader: 
   data_loader: pytorch
   batch_size: 7
-  read_threads: 4
+  read_threads: 0
   file_shuffle: seed
   sample_shuffle: seed
 

@@ -15,13 +15,15 @@
    limitations under the License.
 """
 import math
+import os
 import pickle
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler
 
 from dlio_benchmark.common.constants import MODULE_DATA_LOADER
-from dlio_benchmark.common.enumerations import DatasetType, DataLoaderType
+from dlio_benchmark.common.enumerations import DatasetType, DataLoaderType, Shuffle, StorageType
 from dlio_benchmark.data_loader.base_data_loader import BaseDataLoader
 from dlio_benchmark.reader.reader_factory import ReaderFactory
 from dlio_benchmark.utils.utility import utcnow, DLIOMPI, Profile, dft_ai
@@ -63,6 +65,7 @@ class TorchDataset(Dataset):
                                                dataset_type=self.dataset_type,
                                                thread_index=worker_id,
                                                epoch_number=self.epoch_number)
+        self.reader.global_index_map = _all_samples_index_map(self.reader._file_list, self.num_samples, _args)
 
     def __del__(self):
         if self.dlp_logger:
@@ -81,25 +84,55 @@ class TorchDataset(Dataset):
         return self.reader.read_index(image_idx, step)
 
 
+def _all_samples_index_map(file_list, num_samples, args):
+    """global sample index -> (file, sample in file), for every sample.
+
+    The reader's default map covers only this rank's fixed block; the
+    shuffling sampler hands a rank samples from anywhere in the dataset.
+    """
+    local_fs = args.storage_type == StorageType.LOCAL_FS
+    spf = args.num_samples_per_file
+    return {g: (os.path.abspath(file_list[g // spf]) if local_fs else file_list[g // spf], g % spf)
+            for g in range(num_samples)}
+
+
 class dlio_sampler(Sampler):
-    def __init__(self, rank, size, num_samples, epochs):
+    """Shuffle the whole dataset every epoch and give each rank its slice.
+
+    Every rank uses the same permutation (same seed), so the slices are
+    disjoint and each rank reads a different subset of files every epoch.
+    With shuffle off, each rank reads the same contiguous block every epoch.
+    """
+    def __init__(self, rank, size, num_samples, epochs, shuffle=Shuffle.OFF, seed=0, start_epoch=1):
         self.size = size
         self.rank = rank
         self.num_samples = num_samples
         self.epochs = epochs
-        samples_per_proc = int(math.ceil(num_samples/size)) 
-        start_sample = self.rank * samples_per_proc
-        end_sample = (self.rank + 1) * samples_per_proc - 1
-        if end_sample > num_samples - 1:
-            end_sample = num_samples - 1
-        self.indices = list(range(start_sample, end_sample + 1))
+        self.shuffle = shuffle
+        samples_per_proc = int(math.ceil(num_samples/size))
+        self.start = min(self.rank * samples_per_proc, num_samples)
+        self.end = min((self.rank + 1) * samples_per_proc, num_samples)
+        if shuffle == Shuffle.RANDOM:
+            # Ranks must agree on the permutation: take rank 0's random seed.
+            seed = DLIOMPI.get_instance().comm().bcast(
+                int(np.random.randint(2**31 - 1)) if rank == 0 else None, root=0)
+        self.seed = seed
+        self.epoch = start_epoch
 
+    def epoch_indices(self, epoch):
+        """Global sample indices this rank reads in the given epoch, in order."""
+        order = np.arange(self.num_samples)
+        if self.shuffle != Shuffle.OFF:
+            np.random.RandomState(self.seed + epoch).shuffle(order)
+        return order[self.start:self.end].tolist()
 
     def __len__(self):
         return self.num_samples
 
     def __iter__(self):
-        for sample in self.indices:
+        indices = self.epoch_indices(self.epoch)
+        self.epoch += 1
+        for sample in indices:
             yield sample
 
 
@@ -112,7 +145,8 @@ class TorchDataLoader(BaseDataLoader):
     def read(self):
         dataset = TorchDataset(self.format_type, self.dataset_type, self.epoch_number, self.num_samples,
                                self._args.read_threads, self.batch_size)
-        sampler = dlio_sampler(self._args.my_rank, self._args.comm_size, self.num_samples, self._args.epochs)
+        sampler = dlio_sampler(self._args.my_rank, self._args.comm_size, self.num_samples, self._args.epochs,
+                               self._args.sample_shuffle, self._args.seed, self.epoch_number)
         if self._args.read_threads >= 1:
             prefetch_factor = math.ceil(self._args.prefetch_size / self._args.read_threads)
         else:
