@@ -15,6 +15,7 @@
    limitations under the License.
 """
 import os
+import sys
 import math
 from time import time
 import numpy as np
@@ -33,7 +34,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 from dlio_benchmark.checkpointing.checkpointing_factory import CheckpointingFactory
 from dlio_benchmark.common.constants import MODULE_DLIO_BENCHMARK
-from dlio_benchmark.common.enumerations import DatasetType, MetadataType
+from dlio_benchmark.common.enumerations import DatasetType, MetadataType, FormatType
 from dlio_benchmark.utils.utility import utcnow, DLIOMPI, Profile, dft_ai, DLIOLogger
 from dlio_benchmark.utils.statscounter import StatsCounter
 from dlio_benchmark.utils.config import LoadConfig, ConfigArguments, GetConfig
@@ -48,6 +49,32 @@ dlp = Profile(MODULE_DLIO_BENCHMARK)
 dftracer_initialize = True
 dftracer_finalize   = True
 dtracer             = None
+
+def _pdc_prefetch_client(args):
+    """PDC client if next-epoch prefetch can run, else None.
+
+    Needs format: pdc, read_threads: 0 (the reader lives in this process),
+    and a pdc_ctypes binding with the prefetch API (pdc_bench_clientcache).
+    """
+    if args.format != FormatType.PDC or args.read_threads != 0:
+        return None
+    from pdc_ctypes import get_client
+    client = get_client("dlio")
+    return client if hasattr(client, "send_prefetch_hint") else None
+
+def _reader_index_map(loader):
+    """The sample -> file map the main-process reader reads from."""
+    return loader._dataset.dataset.reader.global_index_map
+
+def _rank_objects(index_map):
+    """PDC object names this rank reads, in read order, deduplicated."""
+    seen, names = set(), []
+    for global_idx in sorted(index_map):
+        name = os.path.basename(index_map[global_idx][0])
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
 class DLIOBenchmark(object):
     """
@@ -428,6 +455,9 @@ class DLIOBenchmark(object):
             self.framework.get_loader(dataset_type=DatasetType.TRAIN).read()
             if self.do_eval:
                 self.framework.get_loader(dataset_type=DatasetType.VALID).read()
+            pdc_client = _pdc_prefetch_client(self.args)
+            if self.my_rank == 0 and self.args.format == FormatType.PDC:
+                self.logger.output(f"{utcnow()} PDC next-epoch prefetch: {'on' if pdc_client else 'off'}")
             self.comm.barrier()
             for epoch in dft_ai.pipeline.epoch.iter(range(1, self.epochs + 1), include_iter=False):
                 self.stats.start_epoch(epoch)
@@ -446,6 +476,14 @@ class DLIOBenchmark(object):
                     self.framework.get_loader(DatasetType.VALID).finalize()
                 self.args.reconfigure(epoch + 1) # reconfigure once per epoch
                 self.stats.end_epoch(epoch)
+
+                # PDC: hint the objects this rank reads next epoch, and
+                # prefetch them into the client cache before it starts.
+                if pdc_client is not None and epoch < self.epochs:
+                    self.comm.barrier()
+                    index_map = _reader_index_map(self.framework.get_loader(DatasetType.TRAIN))
+                    pdc_client.send_prefetch_hint(_rank_objects(index_map))
+                    pdc_client.prefetch()
 
         if (self.args.checkpoint_only):
             self._checkpoint()            
@@ -506,6 +544,10 @@ def main() -> None:
     """
     DLIOMPI.get_instance().initialize()
     run_benchmark()
+    # PDC's client must close before MPI_Finalize; its atexit hook runs too late.
+    pdc_ctypes = sys.modules.get("pdc_ctypes")
+    if pdc_ctypes is not None and hasattr(pdc_ctypes, "close_client"):
+        pdc_ctypes.close_client()
     DLIOMPI.get_instance().finalize()
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")

@@ -52,29 +52,17 @@ class PDCReader(FormatReader):
         get_client("dlio")
 
     """
-    Per-file (dim1, dim2).
+    Per-file (dim1, dim2), derived from record_length (needs record_length_stdev == 0).
 
-    Preferred: a small companion object '<name>-dims' written by the
-    generator. Falls back to deriving a square sample from
-    record_length, which is only correct when record_length_stdev == 0.
+    Don't read the '<name>-dims' object: every PDC read lands in the client
+    cache, and cached objects that no rank hints break the prefetch data exchange.
     """
     def _shape(self, filename):
-        if filename in _shape_cache:
-            return _shape_cache[filename]
+        if "shape" not in _shape_cache:
+            side = int(self._args.dimension)   # same value the generator uses
+            _shape_cache["shape"] = (side, side)
+        return _shape_cache["shape"]
 
-        client = get_client("dlio")
-        shape = None
-        
-        try:
-            dims = client.read(f"{object_name(filename)}-dims", (0,), (3,), np.int64)
-            shape = (int(dims[1]), int(dims[2]))
-        except Exception:
-            itemsize = np.dtype(self.dtype).itemsize
-            side = int(round((self._args.record_length / itemsize) ** 0.5))
-            shape = (side, side)
-
-        _shape_cache[filename] = shape
-        return shape
 
     @dlp.log
     def open(self, filename):

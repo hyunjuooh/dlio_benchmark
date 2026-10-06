@@ -14,6 +14,9 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 """
+import os
+import time
+
 import h5py
 
 from dlio_benchmark.common.constants import MODULE_DATA_READER
@@ -34,19 +37,40 @@ class HDF5Reader(FormatReader):
     @dlp.log
     def open(self, filename):
         super().open(filename)
-        return h5py.File(filename, 'r')
+        start = time.time()
+        result = h5py.File(filename, 'r')
+        elapsed = time.time() - start
+        print(f"[RANK {self._args.my_rank}] hdf5_reader: open({os.path.basename(filename)}) total time: {elapsed:.4f} seconds", flush = True)
+        return result
 
     @dlp.log
     def close(self, filename):
+        start = time.time()
         self.open_file_map[filename].close()
+        elapsed = time.time() - start
+        print(f"[RANK {self._args.my_rank}] hdf5_reader: close({os.path.basename(filename)}) total time: {elapsed:.4f} seconds", flush = True)
 
     @dlp.log
     def get_sample(self, filename, sample_index):
         super().get_sample(filename, sample_index)
+        start = time.time()
         image_size = 0
+        images = []
         for idx in self.dataset_indices:
             image = self.open_file_map[filename][f'records_{idx}'][sample_index]
             image_size += image.nbytes
+            images.append(image)
+        elapsed = time.time() - start
+
+        # Sanity check that real data was read; outside the timer so the
+        # min/max/mean over the sample don't count as read time.
+        if self._args.my_rank == 0:
+            for idx, image in zip(self.dataset_indices, images):
+                print(f"{os.path.basename(filename)} records_{idx} idx={sample_index} "
+                      f"shape={image.shape} min={image.min()} max={image.max()} "
+                      f"mean={image.mean():.2f} nbytes={image.nbytes}", flush=True)
+
+        print(f"[RANK {self._args.my_rank}] hdf5_reader: get_sample({os.path.basename(filename)}) total time: {elapsed:.4f} seconds", flush = True)
         dlp.update(image_size=image_size)
         dft_ai.update(image_size=image.nbytes)
 

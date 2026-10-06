@@ -12,7 +12,7 @@ workflow:
 
 dataset: 
   data_folder: data/unet3d/
-  format: pdc
+  format: hdf5
   num_files_train: 168
   num_samples_per_file: 1
   record_length_bytes: 104857600
