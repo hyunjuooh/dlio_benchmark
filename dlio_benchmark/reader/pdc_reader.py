@@ -49,6 +49,8 @@ class PDCReader(FormatReader):
     def __init__(self, dataset_type, thread_index, epoch):
         super().__init__(dataset_type, thread_index)
         self.dtype = RECORD_DTYPE
+        self._buf = None        # reused read buffer, allocated on first get_sample
+        self._num_reads = 0
         get_client("dlio")
 
     """
@@ -91,18 +93,26 @@ class PDCReader(FormatReader):
         start = time.time()
         _ = self.open_file_map[filename]
         dim1, dim2 = self._shape(filename)
+        # Reuse one read buffer: a fresh 100 MB array per sample costs page
+        # faults and a new NIC registration (cxil_map errors) on every read.
+        if self._buf is None or self._buf.shape != (1, dim1, dim2):
+            self._buf = np.empty((1, dim1, dim2), dtype=self.dtype)
         image = get_client("dlio").read(
-            object_name(filename), (sample_index, 0, 0), (1, dim1, dim2), self.dtype
+            object_name(filename), (sample_index, 0, 0), (1, dim1, dim2), self.dtype, out=self._buf
         )
         image = image.reshape(dim1, dim2)
 
-        if self._args.my_rank == 0:
+        end = time.time()
+        elapsed = end - start
+
+        # Sanity check that real data was read: rank 0, every 100th sample,
+        # outside the timer so min/max/mean don't count as read time.
+        self._num_reads += 1
+        if self._args.my_rank == 0 and self._num_reads % 100 == 1:
             print(f"{object_name(filename)} idx={sample_index} "
                   f"shape={image.shape} min={image.min()} max={image.max()} "
                   f"mean={image.mean():.2f} nbytes={image.nbytes}", flush=True)
 
-        end = time.time()
-        elapsed = end - start
         print(f"[RANK {self._args.my_rank}] pdc_reader: get_sample({object_name(filename)}) total time: {elapsed:.4f} seconds", flush = True)
 
         dlp.update(image_size=image.nbytes)

@@ -62,14 +62,15 @@ def _pdc_prefetch_client(args):
     client = get_client("dlio")
     return client if hasattr(client, "send_prefetch_hint") else None
 
-def _reader_index_map(loader):
-    """The sample -> file map the main-process reader reads from."""
-    return loader._dataset.dataset.reader.global_index_map
+def _next_epoch_objects(loader):
+    """PDC object names this rank reads next epoch, in read order, deduplicated.
 
-def _rank_objects(index_map):
-    """PDC object names this rank reads, in read order, deduplicated."""
+    Taken from the sampler, which reshuffles the dataset every epoch.
+    """
+    sampler = loader._dataset.sampler
+    index_map = loader._dataset.dataset.reader.global_index_map
     seen, names = set(), []
-    for global_idx in sorted(index_map):
+    for global_idx in sampler.epoch_indices(sampler.epoch):
         name = os.path.basename(index_map[global_idx][0])
         if name not in seen:
             seen.add(name)
@@ -481,8 +482,7 @@ class DLIOBenchmark(object):
                 # prefetch them into the client cache before it starts.
                 if pdc_client is not None and epoch < self.epochs:
                     self.comm.barrier()
-                    index_map = _reader_index_map(self.framework.get_loader(DatasetType.TRAIN))
-                    pdc_client.send_prefetch_hint(_rank_objects(index_map))
+                    pdc_client.send_prefetch_hint(_next_epoch_objects(self.framework.get_loader(DatasetType.TRAIN)))
                     pdc_client.prefetch()
 
         if (self.args.checkpoint_only):
