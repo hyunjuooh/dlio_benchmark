@@ -49,8 +49,6 @@ class PDCReader(FormatReader):
     def __init__(self, dataset_type, thread_index, epoch):
         super().__init__(dataset_type, thread_index)
         self.dtype = RECORD_DTYPE
-        self._buf = None        # reused read buffer, allocated on first get_sample
-        self._num_reads = 0
         get_client("dlio")
 
     """
@@ -69,46 +67,36 @@ class PDCReader(FormatReader):
     @dlp.log
     def open(self, filename):
         super().open(filename)
-
-        print(f"file open: {filename}")
-        start = time.time()
-
-        result = get_client("dlio").obj(object_name(filename))
-
-        end = time.time()
-        elapsed = end - start
-        print(f"[RANK {self._args.my_rank}] pdc_reader: open({object_name(filename)}) total time: {elapsed:.4f} seconds", flush = True)
-        
         # Open the object only. Fetching data here would make the per-sample
         # timing below meaningless.
+        start = time.time()
+        result = get_client("dlio").obj(object_name(filename))
+        elapsed = time.time() - start
+        print(f"[RANK {self._args.my_rank}] pdc_reader: open({object_name(filename)}) total time: {elapsed:.4f} seconds", flush = True)
         return result
 
     @dlp.log
     def close(self, filename):
+        start = time.time()
         super().close(filename)
-    
+        elapsed = time.time() - start
+        print(f"[RANK {self._args.my_rank}] pdc_reader: close({object_name(filename)}) total time: {elapsed:.4f} seconds", flush = True)
+
     @dlp.log
     def get_sample(self, filename, sample_index):
         super().get_sample(filename, sample_index)
         start = time.time()
         _ = self.open_file_map[filename]
         dim1, dim2 = self._shape(filename)
-        # Reuse one read buffer: a fresh 100 MB array per sample costs page
-        # faults and a new NIC registration (cxil_map errors) on every read.
-        if self._buf is None or self._buf.shape != (1, dim1, dim2):
-            self._buf = np.empty((1, dim1, dim2), dtype=self.dtype)
         image = get_client("dlio").read(
-            object_name(filename), (sample_index, 0, 0), (1, dim1, dim2), self.dtype, out=self._buf
+            object_name(filename), (sample_index, 0, 0), (1, dim1, dim2), self.dtype
         )
         image = image.reshape(dim1, dim2)
+        elapsed = time.time() - start
 
-        end = time.time()
-        elapsed = end - start
-
-        # Sanity check that real data was read: rank 0, every 100th sample,
-        # outside the timer so min/max/mean don't count as read time.
-        self._num_reads += 1
-        if self._args.my_rank == 0 and self._num_reads % 100 == 1:
+        # Sanity check that real data was read; outside the timer so the
+        # min/max/mean over the sample don't count as read time.
+        if self._args.my_rank == 0:
             print(f"{object_name(filename)} idx={sample_index} "
                   f"shape={image.shape} min={image.min()} max={image.max()} "
                   f"mean={image.mean():.2f} nbytes={image.nbytes}", flush=True)
